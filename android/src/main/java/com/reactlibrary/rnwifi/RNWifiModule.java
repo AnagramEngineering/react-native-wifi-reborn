@@ -13,11 +13,13 @@ import android.net.NetworkInfo;
 import android.net.NetworkRequest;
 import android.net.Uri;
 import android.net.wifi.ScanResult;
+import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.provider.Settings;
+import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
@@ -43,6 +45,7 @@ import java.util.concurrent.TimeUnit;
 public class RNWifiModule extends ReactContextBaseJavaModule {
     private final WifiManager wifi;
     private final ReactApplicationContext context;
+    private int networkIdRef = 0;
 
     private final static int ADD_NETWORK_FAILED = -1;
 
@@ -54,7 +57,6 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
 
     RNWifiModule(ReactApplicationContext context) {
         super(context);
-
         // TODO: get when needed
         wifi = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         this.context = context;
@@ -112,7 +114,7 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
      * @param useWifi
      */
     @ReactMethod
-    public void forceWifiUsage(boolean useWifi) {
+    public void forceWifiUsage(boolean useWifi, final String ssid) {
         boolean canWriteFlag = false;
 
         if (useWifi) {
@@ -134,28 +136,39 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
                 if (((Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) && canWriteFlag) || ((Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) && !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M))) {
                     final ConnectivityManager manager = (ConnectivityManager) context
                             .getSystemService(Context.CONNECTIVITY_SERVICE);
-                    NetworkRequest.Builder builder;
+                    final WifiManager wifiManager = (WifiManager) context.getApplicationContext().getSystemService(context.WIFI_SERVICE);
+                    NetworkRequest. Builder builder;
                     builder = new NetworkRequest.Builder();
                     //set the transport type to WIFI
                     builder.addTransportType(NetworkCapabilities.TRANSPORT_WIFI);
 
-
                     manager.requestNetwork(builder.build(), new ConnectivityManager.NetworkCallback() {
                         @Override
                         public void onAvailable(@NonNull final Network network) {
-                            // FIXME: should this be try catch?
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                manager.bindProcessToNetwork(network);
-                            } else {
-                                //This method was deprecated in API level 23
-                                ConnectivityManager.setProcessDefaultNetwork(network);
+                            NetworkInfo networkInfo = manager.getNetworkInfo(network);
+                            if (networkInfo != null) {
+                                String networkSsid = networkInfo.getExtraInfo();
+                                WifiInfo wifiInfo = wifiManager.getConnectionInfo();
+                                if (wifiInfo.getSupplicantState() == SupplicantState.COMPLETED) {
+                                    Log.i("WIFI", "Current ssid: " + wifiInfo.getSSID());
+                                    if (wifiInfo.getSSID() != null && wifiInfo.getSSID().indexOf(ssid) > -1) {
+                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                                            if (manager.bindProcessToNetwork(network)) {
+                                                Log.i("WIFI", "Binding to process has worked: " + networkSsid + " nw: " + network);
+                                            } else {
+                                                Log.i("WIFI", "Binding to process has failed: " + networkSsid  + " nw: " + network);
+                                            }
+                                        } else {
+                                            //This method was deprecated in API level 23
+                                            ConnectivityManager.setProcessDefaultNetwork(network);
+                                        }
+                                    }
+                                }
                             }
                             manager.unregisterNetworkCallback(this);
                         }
                     });
                 }
-
-
             }
         } else {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -297,6 +310,7 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
 
         final boolean enableNetwork = wifiManager.enableNetwork(networkId, true);
         if (enableNetwork) {
+            this.networkIdRef = networkId;
             // Verify the connection
             final IntentFilter intentFilter = new IntentFilter();
             intentFilter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
@@ -312,10 +326,13 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
                             ssid = ssid.substring(1, ssid.length() - 1);
                         }
                         context.unregisterReceiver(this);
-                        if (ssid.equals(SSID))
+                        if (ssid.equals(SSID)) {
+
                             promise.resolve(null);
-                        else
+
+                        } else {
                             promise.reject("connectNetworkFailed", String.format("Could not connect to network with SSID: %s", SSID));
+                        }
                     }
                 }
             };
@@ -339,6 +356,7 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
             }
         return -1;
     }
+
 
     private void stuffWifiConfigurationWithWPA2(final WifiConfiguration wifiConfiguration, final String password) {
         // appropriate cipher is need to set according to security type used,

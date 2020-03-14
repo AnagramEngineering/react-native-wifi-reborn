@@ -1,7 +1,7 @@
 {
-  "name": "react-native-wifi-reborn",
-  "version": "2.4.0",
-  "description": "A react-native implementation for viewing and connecting to Wifi networks on Android and iOS devices.",
+  "name": "anagram-react-native-wifi-reborn",
+  "version": "0.0.1",
+  "description": "Based on 2.4.0 - A react-native implementation for viewing and connecting to Wifi networks on Android and iOS devices.",
   "types": "lib/types/index.d.ts",
   "main": "src/index.js",
   "scripts": {

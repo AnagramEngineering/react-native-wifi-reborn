@@ -90,6 +90,6 @@ declare module 'react-native-wifi-reborn' {
      * Receives a boolean to enable forceWifiUsage if true, and disable if false.
      * Is important to disable it when disconnecting from IoT device.
      */
-    export function forceWifiUsage(force: boolean): Promise<void>;
+    export function forceWifiUsage(force: boolean, callback: Function);
     //#endregion
 }

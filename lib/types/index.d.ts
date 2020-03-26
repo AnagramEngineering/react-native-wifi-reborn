@@ -1,4 +1,4 @@
-declare module 'react-native-wifi-reborn' {
+declare module 'anagram-react-native-wifi-reborn' {
     export type WiFiObject = {
         SSID: string;
         BSSID: string;
@@ -90,6 +90,6 @@ declare module 'react-native-wifi-reborn' {
      * Receives a boolean to enable forceWifiUsage if true, and disable if false.
      * Is important to disable it when disconnecting from IoT device.
      */
-    export function forceWifiUsage(force: boolean, callback: Function);
+    export function forceWifiUsage(force: boolean, callback: () => boolean): void;
     //#endregion
 }

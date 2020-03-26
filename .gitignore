@@ -42,3 +42,9 @@ buck-out/
 \.buckd/
 *.keystore
 .vscode
+/anagram-react-native-wifi-reborn-0.0.1.tgz
+/android/.classpath
+/android/.project
+/android/.settings/org.eclipse.buildship.core.prefs
+/example/RNWifiReborn/android/.project
+/example/RNWifiReborn/android/.settings/org.eclipse.buildship.core.prefs

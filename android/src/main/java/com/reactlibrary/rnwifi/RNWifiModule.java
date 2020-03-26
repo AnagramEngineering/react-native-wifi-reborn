@@ -151,7 +151,11 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
                                 WifiInfo wifiInfo = wifiManager.getConnectionInfo();
                                 if (wifiInfo.getSupplicantState() == SupplicantState.COMPLETED) {
                                     Log.i("WIFI", "Current ssid: " + wifiInfo.getSSID());
-                                    if (wifiInfo.getSSID() != null && wifiInfo.getSSID().indexOf(ssid) > -1) {
+                                    // if location services are disabled, we don't receive a ssid so we have to somehow trust 
+                                    // that we're suggested the correct network 
+                                    if ((wifiInfo.getSSID() != null && wifiInfo.getSSID().indexOf(ssid) > -1) || 
+                                        wifiInfo.getSSID().equals("<unknown ssid>")    
+                                    ) {
                                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                                             if (manager.bindProcessToNetwork(network)) {
                                                 Log.i("WIFI", "Binding to process has worked: " + networkSsid + " nw: " + network);

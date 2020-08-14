@@ -11,13 +11,16 @@ import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.NetworkRequest;
+import android.net.NetworkSpecifier;
 import android.net.Uri;
 import android.net.wifi.ScanResult;
 import android.net.wifi.SupplicantState;
 import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
+import android.net.wifi.WifiNetworkSpecifier;
 import android.os.Build;
+import android.os.PatternMatcher;
 import android.provider.Settings;
 import android.util.Log;
 
@@ -115,12 +118,15 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
      */
     @ReactMethod
     public void forceWifiUsage(boolean useWifi, final String ssid) {
-        boolean canWriteFlag = false;
+
+        boolean canWriteFlag = true;
 
         if (useWifi) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
 
+                /*
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+
                     canWriteFlag = Settings.System.canWrite(context);
 
                     if (!canWriteFlag) {
@@ -131,7 +137,7 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
                         context.startActivity(intent);
                     }
                 }
-
+                */
 
                 if (((Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) && canWriteFlag) || ((Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) && !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M))) {
                     final ConnectivityManager manager = (ConnectivityManager) context
@@ -151,10 +157,10 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
                                 WifiInfo wifiInfo = wifiManager.getConnectionInfo();
                                 if (wifiInfo.getSupplicantState() == SupplicantState.COMPLETED) {
                                     Log.i("WIFI", "Current ssid: " + wifiInfo.getSSID());
-                                    // if location services are disabled, we don't receive a ssid so we have to somehow trust 
-                                    // that we're suggested the correct network 
-                                    if ((wifiInfo.getSSID() != null && wifiInfo.getSSID().indexOf(ssid) > -1) || 
-                                        wifiInfo.getSSID().equals("<unknown ssid>")    
+                                    // if location services are disabled, we don't receive a ssid so we have to somehow trust
+                                    // that we're suggested the correct network
+                                    if ((wifiInfo.getSSID() != null && wifiInfo.getSSID().indexOf(ssid) > -1) ||
+                                            wifiInfo.getSSID().equals("<unknown ssid>")
                                     ) {
                                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                                             if (manager.bindProcessToNetwork(network)) {
@@ -183,6 +189,7 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
                 ConnectivityManager.setProcessDefaultNetwork(null);
             }
         }
+
     }
 
     /**
@@ -274,83 +281,121 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
         //		2) create NetworkRequest https://developer.android.com/reference/android/net/NetworkRequest.Builder
         //      3) connectivityManager.requestNetwork()
 
-        // create network
-        final WifiConfiguration wifiConfiguration = new WifiConfiguration();
-        wifiConfiguration.SSID = formatWithBackslashes(SSID);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            final ConnectivityManager connectivityManager = (ConnectivityManager) context
+                    .getSystemService(Context.CONNECTIVITY_SERVICE);
 
-        switch (encryption) {
-            case WPA2:
-                stuffWifiConfigurationWithWPA2(wifiConfiguration, password);
-                break;
-            case WEP:
-                stuffWifiConfigurationWithWEP(wifiConfiguration, password);
-                break;
-            case NONE:
-                stuffWifiConfigurationWithoutEncryption(wifiConfiguration);
-                break;
-        }
+            final NetworkSpecifier specifier =
+                    new WifiNetworkSpecifier.Builder()
+                        .setSsid( SSID )
+                        .setWpa2Passphrase(password)
+                        .build();
 
-        // add to wifi manager
-        final WifiManager wifiManager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        if (wifiManager == null) {
-            promise.reject("wifiManagerError", "Could not get the WifiManager (SystemService).");
-            return;
-        }
+            final NetworkRequest request =
+                    new NetworkRequest.Builder()
+                            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                            .setNetworkSpecifier(specifier)
+                            .build();
 
-        int networkId = wifiManager.addNetwork(wifiConfiguration);
-        if (networkId == ADD_NETWORK_FAILED) {
-            networkId = checkForExistingNetwork(wifiConfiguration);
+            final ConnectivityManager.NetworkCallback networkCallback = new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(Network network) {
+                    Log.i("Nbox", "Network available");
+                    promise.resolve(null);
+                }
+
+                public void onUnavailable() {
+                    Log.i("Nbox", "Network NOT available");
+                    promise.reject("wifiManagerError", "Network not available");
+                }
+
+            };
+            connectivityManager.requestNetwork(request, networkCallback);
+
+        } else {
+            // the original way to do things (includes adaption (mostly on forceWIFI) on Android 9)
+            // create network
+            final WifiConfiguration wifiConfiguration = new WifiConfiguration();
+            wifiConfiguration.SSID = formatWithBackslashes(SSID);
+
+            switch (encryption) {
+                case WPA2:
+                    stuffWifiConfigurationWithWPA2(wifiConfiguration, password);
+                    break;
+                case WEP:
+                    stuffWifiConfigurationWithWEP(wifiConfiguration, password);
+                    break;
+                case NONE:
+                    stuffWifiConfigurationWithoutEncryption(wifiConfiguration);
+                    break;
+            }
+
+            // add to wifi manager
+            final WifiManager wifiManager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+            if (wifiManager == null) {
+                promise.reject("wifiManagerError", "Could not get the WifiManager (SystemService).");
+                return;
+            }
+
+            int networkId = wifiManager.addNetwork(wifiConfiguration);
             if (networkId == ADD_NETWORK_FAILED) {
-                promise.reject("addOrUpdateFailed", String.format("Could not add or update network configuration with SSID %s.", SSID));
+                networkId = checkForExistingNetwork(wifiConfiguration);
+                if (networkId == ADD_NETWORK_FAILED) {
+                    promise.reject("addOrUpdateFailed", String.format("Could not add or update network configuration with SSID %s.", SSID));
+                }
+            }
+
+            // wifiManager.saveConfiguration(); is not needed as this is already done by addNetwork or removeNetwork
+
+            final boolean disconnect = wifiManager.disconnect();
+            if (!disconnect) {
+                promise.reject("disconnectFailed", String.format("Disconnecting network with SSID %s failed (before connect).", SSID));
+            }
+
+            final boolean enableNetwork = wifiManager.enableNetwork(networkId, true);
+            if (enableNetwork) {
+                this.networkIdRef = networkId;
+                // Verify the connection
+                final IntentFilter intentFilter = new IntentFilter();
+                intentFilter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
+                final BroadcastReceiver receiver = new BroadcastReceiver() {
+                    @Override
+                    public void onReceive(final Context context, final Intent intent) {
+                        final NetworkInfo info = intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_INFO);
+                        if (info != null && info.isConnected()) {
+                            final WifiInfo wifiInfo = wifiManager.getConnectionInfo();
+                            String ssid = wifiInfo.getSSID();
+                            // This value should be wrapped in double quotes, so we need to unwrap it.
+                            if (ssid.startsWith("\"") && ssid.endsWith("\"")) {
+                                ssid = ssid.substring(1, ssid.length() - 1);
+                            }
+                            context.unregisterReceiver(this);
+                            if (ssid.equals(SSID)) {
+
+                                promise.resolve(null);
+
+                            } else {
+                                promise.reject("connectNetworkFailed", String.format("Could not connect to network with SSID: %s", SSID));
+                            }
+                        }
+                    }
+                };
+                context.registerReceiver(receiver, intentFilter);
+                // Timeout if there is no other saved WiFi network reachable
+                ScheduledThreadPoolExecutor exec = new ScheduledThreadPoolExecutor(1);
+                exec.schedule(new Runnable() {
+                    public void run() {
+                        promise.reject("connectNetworkFailed", String.format("Timeout connecting to network with SSID: %s", SSID));
+                    }
+                }, 8, TimeUnit.SECONDS);
+            } else {
+                promise.reject("connectNetworkFailed", String.format("Could not enable network with SSID: %s", SSID));
             }
         }
 
-        // wifiManager.saveConfiguration(); is not needed as this is already done by addNetwork or removeNetwork
 
-        final boolean disconnect = wifiManager.disconnect();
-        if (!disconnect) {
-            promise.reject("disconnectFailed", String.format("Disconnecting network with SSID %s failed (before connect).", SSID));
-        }
 
-        final boolean enableNetwork = wifiManager.enableNetwork(networkId, true);
-        if (enableNetwork) {
-            this.networkIdRef = networkId;
-            // Verify the connection
-            final IntentFilter intentFilter = new IntentFilter();
-            intentFilter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
-            final BroadcastReceiver receiver = new BroadcastReceiver() {
-                @Override
-                public void onReceive(final Context context, final Intent intent) {
-                    final NetworkInfo info = intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_INFO);
-                    if (info != null && info.isConnected()) {
-                        final WifiInfo wifiInfo = wifiManager.getConnectionInfo();
-                        String ssid = wifiInfo.getSSID();
-                        // This value should be wrapped in double quotes, so we need to unwrap it.
-                        if (ssid.startsWith("\"") && ssid.endsWith("\"")) {
-                            ssid = ssid.substring(1, ssid.length() - 1);
-                        }
-                        context.unregisterReceiver(this);
-                        if (ssid.equals(SSID)) {
-
-                            promise.resolve(null);
-
-                        } else {
-                            promise.reject("connectNetworkFailed", String.format("Could not connect to network with SSID: %s", SSID));
-                        }
-                    }
-                }
-            };
-            context.registerReceiver(receiver, intentFilter);
-            // Timeout if there is no other saved WiFi network reachable
-            ScheduledThreadPoolExecutor exec = new ScheduledThreadPoolExecutor(1);
-            exec.schedule(new Runnable() {
-                public void run() {
-                    promise.reject("connectNetworkFailed", String.format("Timeout connecting to network with SSID: %s", SSID));
-                }
-            }, 8, TimeUnit.SECONDS);
-        } else {
-            promise.reject("connectNetworkFailed", String.format("Could not enable network with SSID: %s", SSID));
-        }
     }
 
     private int checkForExistingNetwork(final WifiConfiguration wifiConfiguration) {

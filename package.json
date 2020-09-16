@@ -1,6 +1,6 @@
 {
   "name": "anagram-react-native-wifi-reborn",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Based on 2.4.0 - A react-native implementation for viewing and connecting to Wifi networks on Android and iOS devices.",
   "types": "lib/types/index.d.ts",
   "main": "src/index.js",

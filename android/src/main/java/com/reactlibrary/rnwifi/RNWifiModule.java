@@ -7,6 +7,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.ConnectivityManager;
+import android.net.MacAddress;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
@@ -224,7 +225,7 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
      * @param promise
      */
     @ReactMethod
-    public void connectToProtectedSSID(@NonNull final String SSID, @NonNull final String password, final boolean isWep, final Promise promise) {
+    public void connectToProtectedSSID(@NonNull final String SSID, @NonNull final String bssid, @NonNull final String password, final boolean isWep, final Promise promise) {
         final boolean locationPermissionGranted = PermissionUtils.isLocationPermissionGranted(context);
         final boolean isLocationOn = LocationUtils.isLocationOn(context);
 
@@ -234,11 +235,11 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
             if (encryption == null) {
                 encryption = WIFI_ENCRYPTION.WPA2;
             }
-            connectTo(SSID, password, encryption, promise);
+            connectTo(SSID, bssid, password, encryption, promise);
         }
 
         // TODO: make the wifi encryption configurable
-        connectTo(SSID, password, WIFI_ENCRYPTION.WPA2, promise);
+        connectTo(SSID, bssid, password, WIFI_ENCRYPTION.WPA2, promise);
     }
 
     //region Helpers
@@ -273,23 +274,20 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
      * @param password of the network to connect with
      * @param promise  to resolve or reject if connecting worked
      */
-    private void connectTo(@NonNull final String SSID, @NonNull final String password, @NonNull final WIFI_ENCRYPTION encryption, @NonNull final Promise promise) {
-        // TODO: Compatibility with Android 10
-        // Note: For now Android 10 still works but in the future, the WifiConfiguration methods are all deprecated.
-        // if (isAndroid10OrLater()) {
-        // 		1) create WifiNetworkSpecifier https://developer.android.com/reference/android/net/wifi/WifiNetworkSpecifier.Builder
-        //		2) create NetworkRequest https://developer.android.com/reference/android/net/NetworkRequest.Builder
-        //      3) connectivityManager.requestNetwork()
+    private void connectTo(@NonNull final String SSID, @NonNull final String wifiMac, @NonNull final String password, @NonNull final WIFI_ENCRYPTION encryption, @NonNull final Promise promise) {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             final ConnectivityManager connectivityManager = (ConnectivityManager) context
                     .getSystemService(Context.CONNECTIVITY_SERVICE);
 
-            final NetworkSpecifier specifier =
-                    new WifiNetworkSpecifier.Builder()
-                        .setSsid( SSID )
-                        .setWpa2Passphrase(password)
-                        .build();
+            final WifiNetworkSpecifier.Builder builder =  new WifiNetworkSpecifier.Builder()
+                    .setSsid( SSID )
+                    .setWpa2Passphrase(password);
+            if (wifiMac != null && !wifiMac.equals("")) {
+                builder.setBssid(MacAddress.fromString(wifiMac));
+            }
+
+            final NetworkSpecifier specifier = builder.build();
 
             final NetworkRequest request =
                     new NetworkRequest.Builder()

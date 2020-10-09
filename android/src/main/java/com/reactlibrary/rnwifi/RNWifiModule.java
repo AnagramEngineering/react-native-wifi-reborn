@@ -1,471 +1,298 @@
 package com.reactlibrary.rnwifi;
 
-import android.Manifest;
 import android.annotation.SuppressLint;
-import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.ConnectivityManager;
-import android.net.MacAddress;
 import android.net.Network;
 import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
 import android.net.NetworkRequest;
-import android.net.NetworkSpecifier;
-import android.net.Uri;
 import android.net.wifi.ScanResult;
-import android.net.wifi.SupplicantState;
-import android.net.wifi.WifiConfiguration;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
-import android.net.wifi.WifiNetworkSpecifier;
 import android.os.Build;
-import android.os.PatternMatcher;
-import android.provider.Settings;
-import android.util.Log;
 
 import androidx.annotation.NonNull;
 import androidx.annotation.Nullable;
-import androidx.annotation.RequiresPermission;
 
-import com.facebook.react.bridge.Callback;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
-import com.facebook.react.uimanager.IllegalViewOperationException;
+import com.reactlibrary.rnwifi.errors.ConnectErrorCodes;
+import com.reactlibrary.rnwifi.errors.DisconnectErrorCodes;
+import com.facebook.react.bridge.ReadableMap;
+import com.facebook.react.bridge.WritableArray;
+import com.reactlibrary.rnwifi.errors.IsRemoveWifiNetworkErrorCodes;
+import com.reactlibrary.rnwifi.errors.LoadWifiListErrorCodes;
+import com.reactlibrary.rnwifi.receivers.WifiScanResultReceiver;
 import com.reactlibrary.utils.LocationUtils;
 import com.reactlibrary.utils.PermissionUtils;
-
-import org.json.JSONArray;
-import org.json.JSONException;
-import org.json.JSONObject;
+import com.thanosfisherman.wifiutils.WifiUtils;
+import com.thanosfisherman.wifiutils.wifiConnect.ConnectionErrorCode;
+import com.thanosfisherman.wifiutils.wifiConnect.ConnectionSuccessListener;
+import com.thanosfisherman.wifiutils.wifiDisconnect.DisconnectionErrorCode;
+import com.thanosfisherman.wifiutils.wifiDisconnect.DisconnectionSuccessListener;
+import com.thanosfisherman.wifiutils.wifiRemove.RemoveErrorCode;
+import com.thanosfisherman.wifiutils.wifiRemove.RemoveSuccessListener;
 
 import java.util.List;
-import java.util.concurrent.ScheduledThreadPoolExecutor;
-import java.util.concurrent.TimeUnit;
+
+import static com.reactlibrary.mappers.WifiScanResultsMapper.mapWifiScanResults;
 
 public class RNWifiModule extends ReactContextBaseJavaModule {
     private final WifiManager wifi;
     private final ReactApplicationContext context;
-    private int networkIdRef = 0;
 
-    private final static int ADD_NETWORK_FAILED = -1;
-
-    private enum WIFI_ENCRYPTION {
-        NONE,
-        WEP,
-        WPA2,
-    }
+    final long CONNECT_TIMEOUT_IN_MILLISECONDS = 45000;
 
     RNWifiModule(ReactApplicationContext context) {
         super(context);
+
         // TODO: get when needed
         wifi = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         this.context = context;
     }
 
     @Override
+    @NonNull
     public String getName() {
         return "WifiManager";
     }
 
     /**
-     * Method to load wifi list into string via Callback. Returns a stringified JSONArray
-     *
-     * @param successCallback
-     * @param errorCallback
+     * Returns a list of nearby WiFI networks.
      */
     @ReactMethod
-    public void loadWifiList(Callback successCallback, Callback errorCallback) {
-        try {
-            List<ScanResult> results = wifi.getScanResults();
-            JSONArray wifiArray = new JSONArray();
+    public void loadWifiList(final Promise promise) {
+        final boolean locationPermissionGranted = PermissionUtils.isLocationPermissionGranted(context);
+        if (!locationPermissionGranted) {
+            promise.reject(LoadWifiListErrorCodes.locationPermissionMissing.toString(), "Location permission (ACCESS_FINE_LOCATION) is not granted");
+            return;
+        }
 
-            for (ScanResult result : results) {
-                JSONObject wifiObject = new JSONObject();
-                if (!result.SSID.equals("")) {
-                    try {
-                        wifiObject.put("SSID", result.SSID);
-                        wifiObject.put("BSSID", result.BSSID);
-                        wifiObject.put("capabilities", result.capabilities);
-                        wifiObject.put("frequency", result.frequency);
-                        wifiObject.put("level", result.level);
-                        wifiObject.put("timestamp", result.timestamp);
-                    } catch (JSONException e) {
-                        errorCallback.invoke(e.getMessage());
-                    }
-                    wifiArray.put(wifiObject);
-                }
-            }
-            successCallback.invoke(wifiArray.toString());
-        } catch (IllegalViewOperationException e) {
-            errorCallback.invoke(e.getMessage());
+        final boolean isLocationOn = LocationUtils.isLocationOn(context);
+        if (!isLocationOn) {
+            promise.reject(LoadWifiListErrorCodes.locationServicesOff.toString(), "Location service is turned off");
+            return;
+        }
+
+        try {
+            final List<ScanResult> scanResults = wifi.getScanResults();
+            final WritableArray results = mapWifiScanResults(scanResults);
+            promise.resolve(results);
+        } catch (final Exception exception) {
+            promise.reject(LoadWifiListErrorCodes.exception.toString(), exception.getMessage());
         }
     }
 
+    @Deprecated
+    @ReactMethod
+    public void forceWifiUsage(final boolean useWifi, final Promise promise) {
+        forceWifiUsageWithOptions(useWifi, null , promise);
+    }
+
     /**
-     * Method to force wifi usage if the user needs to send requests via wifi
-     * if it does not have internet connection. Useful for IoT applications, when
-     * the app needs to communicate and send requests to a device that have no
-     * internet connection via wifi.
-     * <p>
-     * Receives a boolean to enable forceWifiUsage if true, and disable if false.
-     * Is important to enable only when communicating with the device via wifi
-     * and remember to disable it when disconnecting from device.
+     * Use this to execute api calls to a wifi network that does not have internet access.
      *
-     * @param useWifi
+     * Useful for commissioning IoT devices.
+     *
+     * This will route all app network requests to the network (instead of the mobile connection).
+     * It is important to disable it again after using as even when the app disconnects from the wifi
+     * network it will keep on routing everything to wifi.
+     *
+     * @param useWifi boolean to force wifi off or on
+     * @param options `noInternet` to indicate that the wifi network does not have internet connectivity
      */
     @ReactMethod
-    public void forceWifiUsage(boolean useWifi, final String ssid) {
+    public void forceWifiUsageWithOptions(final boolean useWifi, @Nullable final ReadableMap options, final Promise promise) {
+        final ConnectivityManager connectivityManager = (ConnectivityManager) context
+                .getSystemService(Context.CONNECTIVITY_SERVICE);
 
-        boolean canWriteFlag = true;
+        if (connectivityManager == null) {
+            promise.reject(ForceWifiUsageErrorCodes.couldNotGetConnectivityManager.toString(), "Failed to get the ConnectivityManager.");
+            return;
+        }
 
         if (useWifi) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            final NetworkRequest.Builder networkRequestBuilder = new NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI);
 
-                /*
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-
-                    canWriteFlag = Settings.System.canWrite(context);
-
-                    if (!canWriteFlag) {
-                        Intent intent = new Intent(Settings.ACTION_MANAGE_WRITE_SETTINGS);
-                        intent.setData(Uri.parse("package:" + context.getPackageName()));
-                        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-
-                        context.startActivity(intent);
-                    }
-                }
-                */
-
-                if (((Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) && canWriteFlag) || ((Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) && !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.M))) {
-                    final ConnectivityManager manager = (ConnectivityManager) context
-                            .getSystemService(Context.CONNECTIVITY_SERVICE);
-                    final WifiManager wifiManager = (WifiManager) context.getApplicationContext().getSystemService(context.WIFI_SERVICE);
-                    NetworkRequest. Builder builder;
-                    builder = new NetworkRequest.Builder();
-                    //set the transport type to WIFI
-                    builder.addTransportType(NetworkCapabilities.TRANSPORT_WIFI);
-
-                    manager.requestNetwork(builder.build(), new ConnectivityManager.NetworkCallback() {
-                        @Override
-                        public void onAvailable(@NonNull final Network network) {
-                            NetworkInfo networkInfo = manager.getNetworkInfo(network);
-                            if (networkInfo != null) {
-                                String networkSsid = networkInfo.getExtraInfo();
-                                WifiInfo wifiInfo = wifiManager.getConnectionInfo();
-                                if (wifiInfo.getSupplicantState() == SupplicantState.COMPLETED) {
-                                    Log.i("WIFI", "Current ssid: " + wifiInfo.getSSID());
-                                    // if location services are disabled, we don't receive a ssid so we have to somehow trust
-                                    // that we're suggested the correct network
-                                    if ((wifiInfo.getSSID() != null && wifiInfo.getSSID().indexOf(ssid) > -1) ||
-                                            wifiInfo.getSSID().equals("<unknown ssid>")
-                                    ) {
-                                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                                            if (manager.bindProcessToNetwork(network)) {
-                                                Log.i("WIFI", "Binding to process has worked: " + networkSsid + " nw: " + network);
-                                            } else {
-                                                Log.i("WIFI", "Binding to process has failed: " + networkSsid  + " nw: " + network);
-                                            }
-                                        } else {
-                                            //This method was deprecated in API level 23
-                                            ConnectivityManager.setProcessDefaultNetwork(network);
-                                        }
-                                    }
-                                }
-                            }
-                            manager.unregisterNetworkCallback(this);
-                        }
-                    });
-                }
+            if (options != null && options.getBoolean("noInternet")) {
+                networkRequestBuilder.removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
             }
+
+            connectivityManager.requestNetwork(networkRequestBuilder.build(), new ConnectivityManager.NetworkCallback() {
+                @Override
+                public void onAvailable(@NonNull final Network network) {
+                    super.onAvailable(network);
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                        connectivityManager.bindProcessToNetwork(network);
+                    } else {
+                        ConnectivityManager.setProcessDefaultNetwork(network);
+                    }
+
+                    connectivityManager.unregisterNetworkCallback(this);
+
+                    promise.resolve(null);
+                }
+            });
         } else {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                ConnectivityManager manager = (ConnectivityManager) context
-                        .getSystemService(Context.CONNECTIVITY_SERVICE);
-                manager.bindProcessToNetwork(null);
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                connectivityManager.bindProcessToNetwork(null);
+            } else {
                 ConnectivityManager.setProcessDefaultNetwork(null);
             }
+
+            promise.resolve(null);
+        }
+    }
+
+    /**
+     * Method to check if wifi is enabled.
+     */
+    @ReactMethod
+    public void isEnabled(final Promise promise) {
+        if (this.wifi == null) {
+            promise.reject(IsEnabledErrorCodes.couldNotGetWifiManager.toString(), "Failed to initialize the WifiManager.");
+            return;
         }
 
+        promise.resolve(wifi.isWifiEnabled());
     }
 
     /**
-     * Method to check if wifi is enabled
+     * Method to set the WiFi on or off on the user's device.
      *
-     * @param isEnabled
+     * @param enabled to enable/disable wifi
      */
     @ReactMethod
-    public void isEnabled(Callback isEnabled) {
-        isEnabled.invoke(wifi.isWifiEnabled());
-    }
-
-    /**
-     * Method to connect/disconnect wifi service
-     *
-     * @param enabled
-     */
-    @ReactMethod
-    public void setEnabled(Boolean enabled) {
+    public void setEnabled(final boolean enabled) {
         wifi.setWifiEnabled(enabled);
     }
 
     /**
-     * Send the SSID and password of a Wifi network into this to connect to the network.
-     * Example:  wifi.findAndConnect(ssid, password);
-     * After 10 seconds, a post telling you whether you are connected will pop up.
-     * Callback returns true if ssid is in the range
+     * Use this to connect with a wifi network.
+     * Example:  wifi.findAndConnect(ssid, password, false);
+     * The promise will resolve with the message 'connected' when the user is connected on Android.
      *
      * @param SSID     name of the network to connect with
      * @param password password of the network to connect with
-     * @param isWep    required for iOS
-     * @param promise
+     * @param isWep    only for iOS
+     * @param promise  to send success/error feedback
      */
     @ReactMethod
-    public void connectToProtectedSSID(@NonNull final String SSID, @NonNull final String bssid, @NonNull final String password, final boolean isWep, final Promise promise) {
+    public void connectToProtectedSSID(@NonNull final String SSID, @NonNull final String password, final boolean isWep, final Promise promise) {
         final boolean locationPermissionGranted = PermissionUtils.isLocationPermissionGranted(context);
+        if (!locationPermissionGranted) {
+            promise.reject(ConnectErrorCodes.locationPermissionMissing.toString(), "Location permission (ACCESS_FINE_LOCATION) is not granted");
+            return;
+        }
+
         final boolean isLocationOn = LocationUtils.isLocationOn(context);
-
-        if (locationPermissionGranted && isLocationOn) {
-            @SuppressLint("MissingPermission") WIFI_ENCRYPTION encryption = findEncryptionByScanning(SSID);
-            // If the wifi network could not be found, we guess it is WPA2
-            if (encryption == null) {
-                encryption = WIFI_ENCRYPTION.WPA2;
-            }
-            connectTo(SSID, bssid, password, encryption, promise);
+        if (!isLocationOn) {
+            promise.reject(ConnectErrorCodes.locationServicesOff.toString(), "Location service is turned off");
+            return;
         }
 
-        // TODO: make the wifi encryption configurable
-        connectTo(SSID, bssid, password, WIFI_ENCRYPTION.WPA2, promise);
-    }
-
-    //region Helpers
-
-    @RequiresPermission(Manifest.permission.ACCESS_COARSE_LOCATION)
-    private @Nullable
-    WIFI_ENCRYPTION findEncryptionByScanning(final String SSID) {
-        final List<ScanResult> scanResults = wifi.getScanResults();
-        for (ScanResult scanResult : scanResults) {
-            if (SSID.equals(scanResult.SSID)) {
-                String capabilities = scanResult.capabilities;
-
-                if (capabilities.contains("WPA") ||
-                        capabilities.contains("WPA2") ||
-                        capabilities.contains("WPA/WPA2 PSK")) {
-                    return WIFI_ENCRYPTION.WPA2;
-                }
-                if (capabilities.contains("WEP")) {
-                    return WIFI_ENCRYPTION.WEP;
-                }
-                return WIFI_ENCRYPTION.NONE;
-            }
-        }
-
-        return null;
-    }
-
-    /**
-     * Connect with a WIFI network.
-     *
-     * @param SSID     of the network to connect with
-     * @param password of the network to connect with
-     * @param promise  to resolve or reject if connecting worked
-     */
-    private void connectTo(@NonNull final String SSID, @NonNull final String wifiMac, @NonNull final String password, @NonNull final WIFI_ENCRYPTION encryption, @NonNull final Promise promise) {
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            final ConnectivityManager connectivityManager = (ConnectivityManager) context
-                    .getSystemService(Context.CONNECTIVITY_SERVICE);
-
-            final WifiNetworkSpecifier.Builder builder =  new WifiNetworkSpecifier.Builder()
-                    .setSsid( SSID )
-                    .setWpa2Passphrase(password);
-            if (wifiMac != null && !wifiMac.equals("")) {
-                builder.setBssid(MacAddress.fromString(wifiMac));
-            }
-
-            final NetworkSpecifier specifier = builder.build();
-
-            final NetworkRequest request =
-                    new NetworkRequest.Builder()
-                            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                            .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                            .setNetworkSpecifier(specifier)
-                            .build();
-
-            final ConnectivityManager.NetworkCallback networkCallback = new ConnectivityManager.NetworkCallback() {
-                @Override
-                public void onAvailable(Network network) {
-                    Log.i("Nbox", "Network available");
-                    promise.resolve(null);
-                }
-
-                public void onUnavailable() {
-                    Log.i("Nbox", "Network NOT available");
-                    promise.reject("wifiManagerError", "Network not available");
-                }
-
-            };
-            connectivityManager.requestNetwork(request, networkCallback);
-
-        } else {
-            // the original way to do things (includes adaption (mostly on forceWIFI) on Android 9)
-            // create network
-            final WifiConfiguration wifiConfiguration = new WifiConfiguration();
-            wifiConfiguration.SSID = formatWithBackslashes(SSID);
-
-            switch (encryption) {
-                case WPA2:
-                    stuffWifiConfigurationWithWPA2(wifiConfiguration, password);
-                    break;
-                case WEP:
-                    stuffWifiConfigurationWithWEP(wifiConfiguration, password);
-                    break;
-                case NONE:
-                    stuffWifiConfigurationWithoutEncryption(wifiConfiguration);
-                    break;
-            }
-
-            // add to wifi manager
-            final WifiManager wifiManager = (WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-            if (wifiManager == null) {
-                promise.reject("wifiManagerError", "Could not get the WifiManager (SystemService).");
-                return;
-            }
-
-            int networkId = wifiManager.addNetwork(wifiConfiguration);
-            if (networkId == ADD_NETWORK_FAILED) {
-                networkId = checkForExistingNetwork(wifiConfiguration);
-                if (networkId == ADD_NETWORK_FAILED) {
-                    promise.reject("addOrUpdateFailed", String.format("Could not add or update network configuration with SSID %s.", SSID));
-                }
-            }
-
-            // wifiManager.saveConfiguration(); is not needed as this is already done by addNetwork or removeNetwork
-
-            final boolean disconnect = wifiManager.disconnect();
-            if (!disconnect) {
-                promise.reject("disconnectFailed", String.format("Disconnecting network with SSID %s failed (before connect).", SSID));
-            }
-
-            final boolean enableNetwork = wifiManager.enableNetwork(networkId, true);
-            if (enableNetwork) {
-                this.networkIdRef = networkId;
-                // Verify the connection
-                final IntentFilter intentFilter = new IntentFilter();
-                intentFilter.addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION);
-                final BroadcastReceiver receiver = new BroadcastReceiver() {
+        WifiUtils.withContext(context)
+                .connectWith(SSID, password)
+                .setTimeout(CONNECT_TIMEOUT_IN_MILLISECONDS)
+                .onConnectionResult(new ConnectionSuccessListener() {
                     @Override
-                    public void onReceive(final Context context, final Intent intent) {
-                        final NetworkInfo info = intent.getParcelableExtra(WifiManager.EXTRA_NETWORK_INFO);
-                        if (info != null && info.isConnected()) {
-                            final WifiInfo wifiInfo = wifiManager.getConnectionInfo();
-                            String ssid = wifiInfo.getSSID();
-                            // This value should be wrapped in double quotes, so we need to unwrap it.
-                            if (ssid.startsWith("\"") && ssid.endsWith("\"")) {
-                                ssid = ssid.substring(1, ssid.length() - 1);
+                    public void success() {
+                        promise.resolve("connected");
+                    }
+
+                    @SuppressLint("DefaultLocale")
+                    @Override
+                    public void failed(@NonNull ConnectionErrorCode errorCode) {
+                        switch (errorCode) {
+                            case COULD_NOT_ENABLE_WIFI: {
+                                promise.reject(ConnectErrorCodes.couldNotEnableWifi.toString(), "On Android 10, the user has to enable wifi manually.");
                             }
-                            context.unregisterReceiver(this);
-                            if (ssid.equals(SSID)) {
-
-                                promise.resolve(null);
-
-                            } else {
-                                promise.reject("connectNetworkFailed", String.format("Could not connect to network with SSID: %s", SSID));
+                            case COULD_NOT_SCAN: {
+                                promise.reject(ConnectErrorCodes.couldNotScan.toString(), "Starting Android 9, apps are only allowed to scan wifi networks a few times.");
+                            }
+                            case DID_NOT_FIND_NETWORK_BY_SCANNING: {
+                                promise.reject(ConnectErrorCodes.didNotFindNetwork.toString(), "Wifi network is not in range or not seen.");
+                            }
+                            case AUTHENTICATION_ERROR_OCCURRED: {
+                                promise.reject(ConnectErrorCodes.authenticationErrorOccurred.toString(), "Authentication error, wrong password or a saved wifi configuration with a different password / security type.");
+                            }
+                            case TIMEOUT_OCCURRED: {
+                                promise.reject(ConnectErrorCodes.timeoutOccurred.toString(), String.format("Could not connect in %d milliseconds ", CONNECT_TIMEOUT_IN_MILLISECONDS));
+                            }
+                            case USER_CANCELLED: {
+                                promise.reject(ConnectErrorCodes.userDenied.toString(), "On Android 10, the user cancelled connecting (via System UI).");
+                            }
+                            case ANDROID_10_IMMEDIATELY_DROPPED_CONNECTION: {
+                                promise.reject(ConnectErrorCodes.android10ImmediatelyDroppedConnection.toString(), "Firmware bugs on OnePlus prevent it from connecting on some firmware versions.");
+                            }
+                            default:
+                            case COULD_NOT_CONNECT: {
+                                promise.reject(ConnectErrorCodes.unableToConnect.toString(), String.format("Failed to connect with %s", SSID));
                             }
                         }
                     }
-                };
-                context.registerReceiver(receiver, intentFilter);
-                // Timeout if there is no other saved WiFi network reachable
-                ScheduledThreadPoolExecutor exec = new ScheduledThreadPoolExecutor(1);
-                exec.schedule(new Runnable() {
-                    public void run() {
-                        promise.reject("connectNetworkFailed", String.format("Timeout connecting to network with SSID: %s", SSID));
+                })
+                .start();
+    }
+
+    /**
+     * Returns if the device is currently connected to a WiFi network.
+     */
+    @ReactMethod
+    public void connectionStatus(final Promise promise) {
+        final ConnectivityManager connectivityManager = (ConnectivityManager) getReactApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        if(connectivityManager == null) {
+            promise.resolve(false);
+            return;
+        }
+
+        NetworkInfo wifiInfo = connectivityManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
+        if (wifiInfo == null) {
+            promise.resolve(false);
+            return;
+        }
+
+        promise.resolve(wifiInfo.isConnected());
+    }
+
+    /**
+     * Disconnect currently connected WiFi network.
+     */
+    @ReactMethod
+    public void disconnect(final Promise promise) {
+        WifiUtils.withContext(this.context).disconnect(new DisconnectionSuccessListener() {
+            @Override
+            public void success() {
+                promise.resolve(true);
+            }
+
+            @Override
+            public void failed(@NonNull DisconnectionErrorCode errorCode) {
+                switch (errorCode) {
+                    case COULD_NOT_GET_WIFI_MANAGER: {
+                        promise.reject(DisconnectErrorCodes.couldNotGetWifiManager.toString(), "Could not get WifiManager.");
                     }
-                }, 8, TimeUnit.SECONDS);
-            } else {
-                promise.reject("connectNetworkFailed", String.format("Could not enable network with SSID: %s", SSID));
+                    case COULD_NOT_GET_CONNECTIVITY_MANAGER: {
+                        promise.reject(DisconnectErrorCodes.couldNotGetConnectivityManager.toString(), "Could not get Connectivity Manager.");
+                    }
+                    default:
+                    case COULD_NOT_DISCONNECT: {
+                        promise.resolve(false);
+                    }
+                }
             }
-        }
-
-
-
-    }
-
-    private int checkForExistingNetwork(final WifiConfiguration wifiConfiguration) {
-        for (WifiConfiguration tmp : wifi.getConfiguredNetworks())
-            if (tmp.SSID.equals(wifiConfiguration.SSID)) {
-                return tmp.networkId;
-            }
-        return -1;
-    }
-
-
-    private void stuffWifiConfigurationWithWPA2(final WifiConfiguration wifiConfiguration, final String password) {
-        // appropriate cipher is need to set according to security type used,
-        // if not added it will not be able to connect
-        wifiConfiguration.preSharedKey = formatWithBackslashes(password);
-
-        wifiConfiguration.allowedProtocols.set(WifiConfiguration.Protocol.RSN);
-        wifiConfiguration.allowedProtocols.set(WifiConfiguration.Protocol.WPA);
-
-        wifiConfiguration.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.WPA_PSK);
-
-        wifiConfiguration.status = WifiConfiguration.Status.ENABLED;
-
-        wifiConfiguration.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.TKIP);
-        wifiConfiguration.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.CCMP);
-
-
-        wifiConfiguration.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.TKIP);
-        wifiConfiguration.allowedPairwiseCiphers.set(WifiConfiguration.PairwiseCipher.CCMP);
-    }
-
-    private void stuffWifiConfigurationWithWEP(final WifiConfiguration wifiConfiguration, final String password) {
-        wifiConfiguration.wepKeys[0] = formatWithBackslashes(password);
-        wifiConfiguration.wepTxKeyIndex = 0;
-        wifiConfiguration.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
-        wifiConfiguration.allowedGroupCiphers.set(WifiConfiguration.GroupCipher.WEP40);
-    }
-
-    private void stuffWifiConfigurationWithoutEncryption(final WifiConfiguration wifiConfiguration) {
-        wifiConfiguration.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
-    }
-
-    //endregion
-
-    /**
-     * Use this method to check if the device is currently connected to Wifi.
-     *
-     * @param connectionStatusResult
-     */
-    @ReactMethod
-    public void connectionStatus(Callback connectionStatusResult) {
-        ConnectivityManager connManager = (ConnectivityManager) getReactApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
-        NetworkInfo mWifi = connManager.getNetworkInfo(ConnectivityManager.TYPE_WIFI);
-        if (mWifi.isConnected()) {
-            connectionStatusResult.invoke(true);
-        } else {
-            connectionStatusResult.invoke(false);
-        }
-    }
-
-    /**
-     * Disconnect current Wifi.
-     */
-    @ReactMethod
-    public void disconnect() {
-        wifi.disconnect();
+        });
     }
 
     /**
      * This method will return current SSID
      *
-     * @param promise
+     * @param promise to send error/result feedback
      */
     @ReactMethod
     public void getCurrentWifiSSID(final Promise promise) {
@@ -481,86 +308,90 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
     }
 
     /**
-     * ]
-     * This method will return the basic service set identifier (BSSID) of the current access point
-     *
-     * @param callback
+     * Returns the BSSID (basic service set identifier) of the currently connected WiFi network.
      */
     @ReactMethod
-    public void getBSSID(final Callback callback) {
-        WifiInfo info = wifi.getConnectionInfo();
-
-        String bssid = info.getBSSID();
-
-        callback.invoke(bssid.toUpperCase());
+    public void getBSSID(final Promise promise) {
+        final WifiInfo info = wifi.getConnectionInfo();
+        final String bssid = info.getBSSID();
+        promise.resolve(bssid.toUpperCase());
     }
 
     /**
-     * This method will return current wifi signal strength
-     *
-     * @param callback
+     * Returns the RSSI (received signal strength indicator) of the currently connected WiFi network.
      */
     @ReactMethod
-    public void getCurrentSignalStrength(final Callback callback) {
-        int linkSpeed = wifi.getConnectionInfo().getRssi();
-        callback.invoke(linkSpeed);
+    public void getCurrentSignalStrength(final Promise promise) {
+        final int linkSpeed = wifi.getConnectionInfo().getRssi();
+        promise.resolve(linkSpeed);
     }
 
     /**
-     * This method will return current wifi frequency
-     *
-     * @param callback
+     * Returns the frequency of the currently connected WiFi network.
      */
     @ReactMethod
-    public void getFrequency(final Callback callback) {
-        WifiInfo info = wifi.getConnectionInfo();
-        int frequency = info.getFrequency();
-        callback.invoke(frequency);
+    public void getFrequency(final Promise promise) {
+        final WifiInfo info = wifi.getConnectionInfo();
+        final int frequency = info.getFrequency();
+        promise.resolve(frequency);
     }
 
     /**
-     * This method will return current IP
-     *
-     * @param callback
+     * Returns the IP of the currently connected WiFi network.
      */
     @ReactMethod
-    public void getIP(final Callback callback) {
-        WifiInfo info = wifi.getConnectionInfo();
-        String stringIP = longToIP(info.getIpAddress());
-        callback.invoke(stringIP);
+    public void getIP(final Promise promise) {
+        final WifiInfo info = wifi.getConnectionInfo();
+        final String stringIP = longToIP(info.getIpAddress());
+        promise.resolve(stringIP);
     }
 
     /**
-     * This method will remove the wifi network as per the passed SSID from the device list
+     * This method will remove the wifi network configuration.
+     * If you are connected to that network, it will disconnect.
      *
-     * @param ssid
-     * @param callback
+     * @param SSID wifi SSID to remove configuration for
      */
     @ReactMethod
-    public void isRemoveWifiNetwork(String ssid, final Callback callback) {
-        List<WifiConfiguration> mWifiConfigList = wifi.getConfiguredNetworks();
-        for (WifiConfiguration wifiConfig : mWifiConfigList) {
-            String comparableSSID = ('"' + ssid + '"'); //Add quotes because wifiConfig.SSID has them
-            if (wifiConfig.SSID.equals(comparableSSID)) {
-                wifi.removeNetwork(wifiConfig.networkId);
-                wifi.saveConfiguration();
-                callback.invoke(true);
-                return;
-            }
+    public void isRemoveWifiNetwork(final String SSID, final Promise promise) {
+        final boolean locationPermissionGranted = PermissionUtils.isLocationPermissionGranted(context);
+        if (!locationPermissionGranted) {
+            promise.reject(IsRemoveWifiNetworkErrorCodes.locationPermissionMissing.toString(), "Location permission (ACCESS_FINE_LOCATION) is not granted");
+            return;
         }
-        callback.invoke(false);
+
+        WifiUtils.withContext(this.context)
+                .remove(SSID, new RemoveSuccessListener() {
+                    @Override
+                    public void success() {
+                        promise.resolve(true);
+                    }
+
+                    @Override
+                    public void failed(@NonNull RemoveErrorCode errorCode) {
+                        switch (errorCode) {
+                            case COULD_NOT_GET_WIFI_MANAGER: {
+                                promise.reject(IsRemoveWifiNetworkErrorCodes.couldNotGetWifiManager.toString(), "Could not get WifiManager.");
+                            }
+                            case COULD_NOT_GET_CONNECTIVITY_MANAGER: {
+                                promise.reject(IsRemoveWifiNetworkErrorCodes.couldNotGetConnectivityManager.toString(), "Could not get Connectivity Manager.");
+                            }
+                            default:
+                            case COULD_NOT_REMOVE: {
+                                promise.resolve(false);
+                            }
+                        }
+                    }
+                });
     }
 
     /**
-     * This method is similar to `loadWifiList` but it forcefully starts the wifi scanning on android and in the callback fetches the list
-     *
-     * @param successCallback
-     * @param errorCallback
+     * Similar to `loadWifiList` but it forcefully starts a new WiFi scan and only passes the results when the scan is done.
      */
     @ReactMethod
-    public void reScanAndLoadWifiList(Callback successCallback, Callback errorCallback) {
-        WifiReceiver receiverWifi = new WifiReceiver(wifi, successCallback, errorCallback);
-        getReactApplicationContext().registerReceiver(receiverWifi, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+    public void reScanAndLoadWifiList(final Promise promise) {
+        final WifiScanResultReceiver wifiScanResultReceiver = new WifiScanResultReceiver(wifi, promise);
+        getReactApplicationContext().registerReceiver(wifiScanResultReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
         wifi.startScan();
     }
 
@@ -579,68 +410,5 @@ public class RNWifiModule extends ReactContextBaseJavaModule {
         sb.append(".");
         sb.append(strip[3]);
         return sb.toString();
-    }
-
-    class WifiReceiver extends BroadcastReceiver {
-
-        private final Callback successCallback;
-        private final Callback errorCallback;
-        private final WifiManager wifi;
-
-        public WifiReceiver(final WifiManager wifi, Callback successCallback, Callback errorCallback) {
-            super();
-            this.successCallback = successCallback;
-            this.errorCallback = errorCallback;
-            this.wifi = wifi;
-        }
-
-        // This method call when number of wifi connections changed
-        public void onReceive(Context c, Intent intent) {
-            c.unregisterReceiver(this);
-            try {
-                List<ScanResult> results = this.wifi.getScanResults();
-                JSONArray wifiArray = new JSONArray();
-
-                for (ScanResult result : results) {
-                    JSONObject wifiObject = new JSONObject();
-                    if (!result.SSID.equals("")) {
-                        try {
-                            wifiObject.put("SSID", result.SSID);
-                            wifiObject.put("BSSID", result.BSSID);
-                            wifiObject.put("capabilities", result.capabilities);
-                            wifiObject.put("frequency", result.frequency);
-                            wifiObject.put("level", result.level);
-                            wifiObject.put("timestamp", result.timestamp);
-                        } catch (JSONException e) {
-                            this.errorCallback.invoke(e.getMessage());
-                            return;
-                        }
-                        wifiArray.put(wifiObject);
-                    }
-                }
-                this.successCallback.invoke(wifiArray.toString());
-            } catch (IllegalViewOperationException e) {
-                this.errorCallback.invoke(e.getMessage());
-            }
-        }
-    }
-
-    private static String formatWithBackslashes(final String value) {
-        return String.format("\"%s\"", value);
-    }
-
-    /**
-     * @return true if the current sdk is above or equal to Android M
-     */
-    private static boolean isAndroidLollipopOrLater() {
-        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.M;
-    }
-
-    /**
-     * @return true if the current sdk is above or equal to Android Q
-     */
-    private static boolean isAndroid10OrLater() {
-        return false; // TODO: Compatibility with Android 10
-        // return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
     }
 }

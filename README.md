@@ -30,9 +30,9 @@ This project is based on the no longer maintained https://github.com/robwalkerco
 
 `$ npm install react-native-wifi-reborn --save`
 
-### iOS setup
+### iOS
 
-You need use enable Access WIFI Information, with correct profile
+You need use enable `Access WIFI Information`, with correct profile. `Hotspot Configuration` is required in order to connect to networks.
 
 #### iOS 13
 
@@ -40,30 +40,35 @@ You need put "Privacy - Location When In Use Usage Description" or "Privacy - Lo
 
 ### Android
 
-Location permission (a runtime permission starting Android 6) is required for some methods (https://github.com/inthepocket/react-native-wifi-reborn#connecttoprotectedssidssid-string-password-string-iswep-boolean-promise). Make sure to request them at runtime: https://facebook.github.io/react-native/docs/permissionsandroid.
+#### `ACCESS_FINE_LOCATION` permission
+
+Since [Android 6](https://developer.android.com/about/versions/marshmallow), you must request the [`ACCESS_FINE_LOCATION`](https://developer.android.com/reference/android/Manifest.permission#ACCESS_FINE_LOCATION) permission at runtime to use the device's Wi-Fi scanning and managing capabilities. In order to accomplish this, you can use the [PermissionsAndroid API](https://reactnative.dev/docs/permissionsandroid) or [React Native Permissions](https://github.com/react-native-community/react-native-permissions).
+
+Example:
+```javascript
+import { PermissionsAndroid } from 'react-native';
+
+const granted = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+      {
+        title: 'Location permission is required for WiFi connections',
+        message:
+          'This app needs location permission as this is required  ' +
+          'to scan for wifi networks.',
+        buttonNegative: 'DENY',
+        buttonPositive: 'ALLOW',
+      },
+);
+if (granted === PermissionsAndroid.RESULTS.GRANTED) {
+    // You can now use react-native-wifi-reborn
+} else {
+    // Permission denied
+}
+```
 
 ### Autolinking (React Native 60+)
 
 This library is correctly autolinked on React Native 60+ 🎉.
-
-#### When using Wix React Native Navigation
-
-##### Android
-
-While the library is included (via settings.gradle) and added (via build.gradle), you still need to manually added to your MainApplication.
-
-```java
-import com.reactlibrary.RNWifiPackage;
-
-public class MainApplication extends NavigationApplication {
-@Override
-	public List<ReactPackage> createAdditionalReactPackages() {
-	return Arrays.asList(
-		...,
-		new RNWifiPackage());
-	}
-}
-```
 
 ### React Native Link (for React Native 0.59 and below)
 
@@ -147,13 +152,30 @@ The password of the wifi network to connect with.
 
 #### isWep
 Type: `boolean`
-Used on iOS. If YES, the network is WEP Wi-Fi; otherwise it is a WPA or WPA2 personal Wi-Fi network.
+Used on iOS. If true, the network is WEP Wi-Fi; otherwise it is a WPA or WPA2 personal Wi-Fi network.
 
 #### Errors:
-* `notInRange`: The WIFI network is not currently in range.
-* `addOrUpdateFailed`: Could not add or update the network configuration.
-* `disconnectFailed`: Disconnecting from the network failed. This is done as part of the connect flow.
-* `connectNetworkFailed`: Could not connect to network.
+* iOS:
+  * `unavailableForOSVersion`: Starting from iOS 11, NEHotspotConfigurationError is available.
+  * `invalid`: If an unknown error is occurred.
+  * `invalidSSID`: If the SSID is invalid.
+  * `invalidSSIDPrefix`: If the SSID prefix is invalid.
+  * `invalidPassphrase`: If the passphrase is invalid.
+  * `userDenied`: If the user canceled the request to join the asked network.
+  * `locationPermissionDenied`: Starting from iOS 13, location permission is denied.
+  * `locationPermissionRestricted`: Starting from iOS 13, location permission is restricted.
+  * `couldNotDetectSSID`: If the SSID couldn't be detected.
+* Android:
+  * `locationPermissionMissing`: Starting android 6, location permission needs to be granted for wifi scanning.
+  * `locationServicesOff`: Starting Android 6, location services needs to be on to scan for wifi networks.
+  * `couldNotEnableWifi`: Starting Android 10, apps are no longer allowed to enable wifi. User has to manually do this.
+  * `couldNotScan`: Starting Android 9, it's only allowed to scan 4 times per 2 minuts in a foreground app.
+  * `didNotFindNetwork`: If the wifi network is not in range, the security type is unknown and WifiUtils doesn't support connecting to the network.
+  * `authenticationErrorOccurred`: Authentication error occurred while trying to connect. The password could be incorrect or the user could have a saved network configuration with a different password!
+  * `android10ImmediatelyDroppedConnection` : Firmware bugs on OnePlus prevent it from connecting on some firmware versions. More info: https://github.com/ThanosFisherman/WifiUtils/issues/63.
+  * `timeoutOccurred`: Could not connect in the timeout window.
+* Both:
+  * `unableToConnect`: When an unknown error occurred.
 
 ### `getCurrentWifiSSID(): Promise`
 
@@ -185,28 +207,23 @@ Used on iOS. If YES, the network is WEP Wi-Fi; otherwise it is a WPA or WPA2 per
 
 
 #### Errors:
-
-* `notInRange`: The WIFI network is not currently in range.
-
-* `addOrUpdateFailed`: Could not add or update the network configuration.
-
-* `disconnectFailed`: Disconnecting from the network failed. This is done as part of the connect flow.
-
-* `connectNetworkFailed`: Could not connect to network.
+* `unavailableForOSVersion`: Starting from iOS 11, NEHotspotConfigurationError is available.
+* `invalid`: If an unknown error is occurred.
+* `invalidSSID`: If the SSID is invalid.
+* `invalidSSIDPrefix`: If the SSID prefix is invalid.
+* `invalidPassphrase`: If the passphrase is invalid.
+* `userDenied`: If the user canceled the request to join the asked network.
+* `locationPermissionDenied`: Starting from iOS 13, location permission is denied.
+* `locationPermissionRestricted`: Starting from iOS 13, location permission is restricted.
+* `couldNotDetectSSID`: If the SSID couldn't be detected.
+* `unableToConnect`: When an unknown error occurred.
 
 ## Only Android
 The following methods work only on Android
 
-### `loadWifiList(successCallback: function, errorCallback: function)`
+### `loadWifiList(): Promise<Array<WifiEntry>>`
 
-Method to get a list of nearby WiFI networks.
-
-#### successCallback( wifiList:  string )
-
-Type: `function`
-
-Function to be called if the attempt is successful. It contains a stringified JSONArray of wifiObjects as parameter, each object containing:
-
+Returns a list of nearby WiFI networks.
 * `SSID`: The network name.
 * `BSSID`: The WiFi BSSID.
 * `capabilities`: Describes the authentication, key management, and encryption schemes supported by the access point.
@@ -214,49 +231,20 @@ Function to be called if the attempt is successful. It contains a stringified JS
 * `level`: The detected signal level in dBm, also known as the RSSI.
 * `timestamp`: timestamp in microseconds (since boot) when this result was last seen.
 
- #### errorCallback
+#### Errors:
+* `locationPermissionMissing`: Starting android 6, location permission needs to be granted for wifi 
+* `locationServicesOff`: Starting Android 6, location services needs to be on to scan for wifi networks.
+* `exception`: Any other caught exception.
 
-Type: `function`
+### `reScanAndLoadWifiList(): Promise<Array<WifiEntry>>`
+Similar to `loadWifiList` but it forcefully starts a new WiFi scan and only passes the results when the scan is done.
 
-Function to be called if any error occurs during the attempt. It contains a `string` as parameter with the error message.
-
-#### Usage
-
-```javascript
-WifiManager.loadWifiList(
-	wifiList => {
-		let wifiArray =  JSON.parse(wifiList);
-		wifiArray.map((value, index) =>
-			console.log(`Wifi ${index  +  1} - ${value.SSID}`)
-		);
-	},
-	error =>  console.log(error)
-);
-/**
-Result:
-"Wifi 1 - Name of the network"
-"Wifi 2 - Name of the network"
-"Wifi 3 - Name of the network"
- ...
- */
-```
-
-### `reScanAndLoadWifiList(successCallback: function, errorCallback: function)`
-
-This method is similar to `loadWifiList` but it forcefully starts the wifi scanning on android and in the callback fetches the list.
-
-#### Usage
-
-Same as `loadWifiList`.
-
-### `isEnabled(isEnabled: function)`
-
+### `isEnabled(): Promise<boolean>`
 Method to check if WiFi is enabled.
 
 ```javascript
-WifiManager.isEnabled(isEnabled => {
-	this.setState({wifiIsEnabled: isEnabled});
-});
+const enabled = await WifiManager.isEnabled();
+this.setState({wifiIsEnabled: enabled});
 ```
 
 ### `setEnabled(enabled: boolean)`
@@ -268,40 +256,46 @@ WifiManager.setEnabled(true); //set WiFi ON
 WifiManager.setEnabled(false); //set WiFi OFF
 ```
 
-### `connectionStatus (connectionStatusResult: function)`
+### `connectionStatus(): Promise<boolean>`
 
-Indicates whether network connectivity exists and it is possible to establish connections.
+Returns if the device is currently connected to a WiFi network.
 
-#### connectionStatusResult( isConnected: boolean )
+### `disconnect()`
+Disconnect currently connected WiFi network.
 
-Type: `function`
+### `getBSSID(): Promise<string>`
+Returns the BSSID (basic service set identifier) of the currently connected WiFi network.
 
-Called when the network status is resolved. It contains a boolean argument
+### `getCurrentSignalStrength(): Promise<number>`
+Returns the RSSI (received signal strength indicator) of the currently connected WiFi network.
 
-### `disconnect`
 
-### `getBSSID`
+### `getFrequency(): Promise<number>`
+Returns the frequency of the currently connected WiFi network.
 
-### `getCurrentSignalStrength`
+### `getIP(): Promise<number>`
+Returns the IP of the currently connected WiFi network.
 
-### `getFrequency`
+### `isRemoveWifiNetwork(ssid: String): Promise<boolean>`
+This method will remove the wifi network configuration.
+If you are connected to that network, it will disconnect.
 
-### `getIP`
+#### Errors:
+* `locationPermissionMissing`: Starting android 6, location permission needs to be granted for wifi 
 
-### `isRemoveWifiNetwork`
+### `forceWifiUsage(useWifi: boolean): Promise`
+Deprecated; see forceWifiUsageWithOptions.
 
-### forceWifiUsage(useWifi: bool)
+### `forceWifiUsageWithOptions(useWifi: boolean, options<Record<string, unknown>)
 
-Method to force wifi usage if the user needs to send requests via wifi if it does not have internet connection.
+Use this to execute api calls to a wifi network that does not have internet access.
+Useful for commissioning IoT devices.
+This will route all app network requests to the network (instead of the mobile connection).
+It is important to disable it again after using as even when the app disconnects from the wifi network it will keep on routing everything to wifi.
 
-If you want to use it, you need to add the `android.permission.WRITE_SETTINGS` permission to your AndroidManifest.xml.
+#### options
+* `noInternet: Boolean`: Indicate the wifi network does not have internet connectivity.
 
-```xml
+## Conventions
 
-<manifest  xmlns:android="http://schemas.android.com/apk/res/android">
-
-<uses-permission  android:name="android.permission.WRITE_SETTINGS" />
-
-</manifest>
-
-```
+* Anuglar JS Git Commit conventions are used, read more: https://gist.github.com/stephenparish/9941e89d80e2bc58a153#recognizing-unimportant-commits

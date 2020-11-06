@@ -1,4 +1,4 @@
-declare module 'react-native-wifi-reborn' {
+declare module 'anagram-react-native-wifi-reborn' {
     export type WiFiObject = {
         SSID: string;
         BSSID: string;
@@ -98,6 +98,7 @@ declare module 'react-native-wifi-reborn' {
      */
     export function connectToProtectedSSID(
         SSID: string,
+        BSSID: string,
         password: string | null,
         isWEP: boolean
     ): Promise<void>;
